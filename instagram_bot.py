@@ -1,5 +1,6 @@
 from selenium import webdriver
 # from selenium.webdriver.common.keys import Keys
+import schedule
 import time
 from utility_methods.utility_methods import *
 import urllib.request
@@ -36,6 +37,8 @@ class InstaBot:
         self.nav_user_url = config['IG_URLS']['NAV_USER']
         self.get_tag_url = config['IG_URLS']['SEARCH_TAGS']
         self.suggested_url = config['IG_URLS']['SUGGESTED']
+
+        self.no_unfollow_unsuccessful = 0
 
         self.driver = webdriver.Chrome(
             config['ENVIRONMENT']['CHROMEDRIVER_PATH'])
@@ -163,7 +166,14 @@ class InstaBot:
                 unfollow_confirmation = self.find_buttons('Unfollow')[0]
                 unfollow_confirmation.click()
         else:
-            print('No {} buttons were found.'.format('Following'))
+            is_Error_page = self.driver.find_elements_by_xpath(
+                "//div[contains(@class, 'error-container')]")
+
+            if is_Error_page:
+                self.no_unfollow_unsuccessful += 1
+                self.prYellow("Error Page")
+            else:
+                print('No {} buttons were found.'.format('Following'))
 
     @ insta_method
     def download_user_images(self, user):
@@ -219,10 +229,14 @@ class InstaBot:
             self.driver.find_element_by_xpath(
                 '//button[contains(@class, "wpO6b")]/*[name()="svg"][@aria-label="Close"]').click()
 
-        imgs[randrange(len(imgs[:n_posts]))].click()
-        self.comment_on_photo()
-        self.driver.find_element_by_xpath(
-            '//button[contains(@class, "wpO6b")]/*[name()="svg"][@aria-label="Close"]').click()
+        rand_end = len(imgs[:n_posts])
+        rand_begin = 0 if rand_end < 4 else (rand_end-4)
+
+        if rand_end != 0:
+            imgs[randrange(rand_begin, rand_end)].click()
+            self.comment_on_photo()
+            self.driver.find_element_by_xpath(
+                '//button[contains(@class, "wpO6b")]/*[name()="svg"][@aria-label="Close"]').click()
 
     # @insta_method
     # def comment_post(self, text):
@@ -396,9 +410,12 @@ class InstaBot:
         retrieved from the not_following_back file in Data Directory
 
         """
+        self.no_unfollow_unsuccessful = 0
         not_following_back = self.get_not_following_back_from_file()
         for follower in not_following_back:
             self.unfollow_user(follower)
+        self.prYellow("Unsuccessful unfollows: " +
+                      str(self.no_unfollow_unsuccessful))
 
     def unfollow_bulk_popup(self):
         """
@@ -410,36 +427,62 @@ class InstaBot:
         self.driver.find_element_by_xpath("//a[contains(@href,'/following')]")\
             .click()
         sleep(2)
-        a = self.driver.find_element_by_xpath(
-            "//*[@title='raoul_thecinnamoncat']")
-        b = a.find_element_by_xpath('..')
-        c = b.find_element_by_xpath('..')
-        d = c.find_element_by_xpath('..')
-        e = d.find_element_by_xpath('..')
-        e.find_element_by_xpath('//button[text()="Following"]').click()
+        not_following_back_arr = self.get_not_following_back_from_file()
+        # scrolling to the bottom
+        scroll_box = self.driver.find_element_by_xpath(
+            "/html/body/div[4]/div/div[2]")
+        last_ht, ht = 0, 1
+        while (last_ht != ht) or (self.driver.find_elements_by_xpath("/html/body/div[4]/div/div[2]/ul/div/li[25]/div/svg")):
+            last_ht = ht
+            sleep(2)
+            ht = self.driver.execute_script("""
+                arguments[0].scrollTo(0, arguments[0].scrollHeight);
+                return arguments[0].scrollHeight;
+                """, scroll_box)
 
-    def like_and_follow_user_from_suggestion(self, n_users):
-        self.driver.get(self.suggested_url)
-        sleep(2)
-        suggestions_box = self.driver.find_element_by_xpath(
-            '//*[@id="react-root"]/section/main/div/div[2]')
-        links = suggestions_box.find_elements_by_tag_name('a')
-        all_suggestions = [name.text for name in links if name.text != '']
+        all_following_box = self.driver.find_element_by_xpath(
+            "//div[contains(@class, 'PZuss')]")
+        all_following = all_following_box.find_elements_by_tag_name('li')
+        self.prYellow(len(all_following))
+        for following in all_following:
+            user_name = (following.find_element_by_tag_name('a')).text
+            if user_name in not_following_back_arr:
+                following.find_element_by_xpath(
+                    '//button[text()="Following"]').click()
+                sleep(1)
+                unfollow_confirmation = self.find_buttons('Unfollow')[0]
+                unfollow_confirmation.click()
+
+    def like_and_follow_user_from_suggestion(self, n_users=50):
+        all_suggestions = []
+        while len(all_suggestions) == 0:
+            self.driver.get(self.suggested_url)
+            self.driver.execute_script("window.scrollTo(0, '10vh')")
+
+            sleep(2)
+            suggestions_box = self.driver.find_element_by_xpath(
+                '//*[@id="react-root"]/section/main/div/div[2]')
+            links = suggestions_box.find_elements_by_tag_name('a')
+            all_suggestions = [name.text for name in links if name.text != '']
+            # filter all verified accounts
+            all_suggestions = [
+                user for user in all_suggestions if 'Verified' not in user]
 
         for suggested_user in all_suggestions[:n_users]:
-            if "Verified" in suggested_user:
-                suggested_user = suggested_user.replace("Verified", "")
+            # if "Verified" in suggested_user:
+            # suggested_user = suggested_user.replace("Verified", "")
+
             self.nav_user(suggested_user)
             sleep(1)
             followers_span = self.driver.find_elements_by_xpath(
                 "//span[contains(@class, 'g47SY')]")
             no_of_followers = followers_span[1].get_attribute('innerHTML')
 
-            self.click_follow_button()
-            if(no_of_followers.isnumeric() and int(no_of_followers) > 300 and int(no_of_followers) < 9000):
-                self.like_and_comment_latest_posts(15)
-            else:
-                self.click_unfollow_button()
+            # self.click_follow_button()
+            if(no_of_followers.isnumeric() and int(no_of_followers) > 30 and int(no_of_followers) < 9000):
+                self.like_and_comment_latest_posts(randrange(10, 15))
+            # else:
+            #     self.click_unfollow_button()
 
     def comment_on_photo(self):
 
@@ -465,6 +508,23 @@ class InstaBot:
             all_comments = json.load(filehandle)
 
         return all_comments
+
+    def auto_unfollow(self):
+        while True:
+            self.unfollow_bulk_profile()
+            time.sleep(5400)
+
+    def schedule_like_and_comment(self):
+        while True:
+            delay = randrange(600, 1080)  # 10,18
+            self.schedule_like_and_comment_error_handler()
+            time.sleep(delay)
+
+    def schedule_like_and_comment_error_handler(self):
+        try:
+            self.like_and_follow_user_from_suggestion()
+        except Exception as e:
+            self.prYellow(e)
 
 
 if __name__ == '__main__':
